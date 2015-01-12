@@ -5,7 +5,7 @@ Unittests for PRTG Query Builder
 
 import unittest
 import re
-from prtg.client import PrtgClient
+from prtg import Client
 
 
 class TestQueryBuilder(unittest.TestCase):

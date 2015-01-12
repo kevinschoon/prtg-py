@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Bulk tag updater tool for the PRTG (http://www.paessler.com/) API.
+Python library for Paessler's PRTG (http://www.paessler.com/)
 """
 
 import json
@@ -194,7 +194,7 @@ class Connection(object):
         return resp
 
 
-class PrtgClient(object):
+class Client(object):
 
     def __init__(self, endpoint, username, password):
         self.connection = Connection()
