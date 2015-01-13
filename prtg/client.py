@@ -33,7 +33,7 @@ class PrtgObject(object):
     column_table = {
 
         'all': [
-            'objid', 'type', 'tags', 'active', 'name'
+            'objid', 'type', 'tags', 'active', 'name', 'status',
         ],
         'sensors': [
             'downtime', 'downtimetime', 'downtimesince', 'uptime', 'uptimetime', 'uptimesince', 'knowntime',
@@ -49,6 +49,11 @@ class PrtgObject(object):
             'partialdownsens', 'warnsens', 'pausedsens', 'unusualsens', 'undefinedsens', 'totalsens',
             'favorite', 'schedule', 'deviceicon', 'host', 'comments', 'icon', 'location', 'parentid'
         ],
+        'status': [
+            'NewMessages', 'NewAlarms', 'Alarms', 'AckAlarms', 'NewToDos', 'Clock', 'ActivationStatusMessage',
+            'BackgroundTasks', 'CorrelationTasks', 'AutoDiscoTasks', 'Version', 'PRTGUpdateAvailable', 'IsAdminUser',
+            'IsCluster', 'ReadOnlyUser', 'ReadOnlyAllowAcknowledge'
+        ]
     }
 
     def __init__(self, **kwargs):
@@ -65,7 +70,6 @@ class Sensor(PrtgObject):
     """
     def __init__(self, **kwargs):
         PrtgObject.__init__(self, **kwargs)
-        self.name = None
         for key in self.column_table['sensors']:
             try:
                 self.__setattr__(key, kwargs[key])
@@ -79,8 +83,20 @@ class Device(PrtgObject):
     """
     def __init__(self, **kwargs):
         PrtgObject.__init__(self, **kwargs)
-        self.name = None
         for key in self.column_table['devices']:
+            try:
+                self.__setattr__(key, kwargs[key])
+            except KeyError:
+                pass
+
+
+class Status(PrtgObject):
+    """
+    PRTG Status Object
+    """
+    def __init__(self, **kwargs):
+        PrtgObject.__init__(self, **kwargs)
+        for key in self.column_table['status']:
             try:
                 self.__setattr__(key, kwargs[key])
             except KeyError:
@@ -100,7 +116,7 @@ class Query(object):
     url_str = '{}/api/{}username={}&password={}&output={}'
     method = 'GET'
 
-    def __init__(self, endpoint, target, username, password, output='json', **kwargs):
+    def __init__(self, endpoint, target, username, password, output='json', max=500, **kwargs):
 
         if target not in self.targets:
             raise BadTarget('Invalid API target: {}'.format(target))
@@ -113,30 +129,33 @@ class Query(object):
         self.content = ''
         self.target = target + '.xml' + '?'
         self.paginate = False
+        self.response = list()
+        self.start = 0
+        self.count = max
+        self.max = max
+        self.finished = False
 
         if 'counter' in kwargs:
             self.paginate = True
             self.counter = kwargs['counter']
-            self._counter = 0
-            self.finished = False
 
         if 'content' in kwargs:
             self.content = kwargs['content']
 
         self.extra = kwargs
 
-    def increment(self, count, total):
-        if self._counter + count >= total:
+    def increment(self, tree_size):
+        self.start = len(self.response)
+        if self.start + self.max >= tree_size:
+            self.count = tree_size - self.start
+        if len(self.response) >= tree_size:
             self.finished = True
-            self._counter = 0
-            return
-        self._counter += count
 
     def get_url(self):
         _url = self.url_str.format(self.endpoint, self.target, self.username, self.password, self.output)
 
         if self.paginate:
-            _url += '&start={}'.format(self._counter)
+            _url += '&start={}&count={}'.format(self.start, self.count)
 
         if self.extra:
             _url += '&' + '&'.join(map(lambda x: '{}={}'.format(x[0], x[1]),
@@ -149,15 +168,13 @@ class Query(object):
 
 class Connection(object):
 
-    def __init__(self, limit=500):
-        self.limit = limit
-        self._counter = 0
-        self.finished = False
-
-    def _process_response(self, response, query, paginate=False):
+    @staticmethod
+    def _process_response(response, query, paginate=False):
 
         processed = None
         out = None
+
+        print(query.target)
 
         if query.output == 'json':
             out = response.read().decode('utf-8')
@@ -173,10 +190,15 @@ class Connection(object):
                 return [Sensor(**x) for x in processed['sensors']], processed['treesize']
 
             if all([query.content == 'devices', processed]):
-                return [Device(**x) for x in processed['sensors']], processed['treesize']
+                return [Device(**x) for x in processed['devices']], processed['treesize']
 
         if not processed:
             raise UnknownResponse('Unknown response: {}'.format(out))
+
+        return processed
+
+    def __init__(self):
+        pass
 
     def _build_request(self, query):
         return request.Request(url=str(query), method=query.method)
@@ -184,14 +206,14 @@ class Connection(object):
     def paginate_request(self, query):
         while not query.finished:
             req = self._build_request(query)
-            resp, size = self._process_response(request.urlopen(req), query, paginate=query.paginate)
-            query.increment(len(resp), size)
-            yield resp
+            resp, tree_size = self._process_response(request.urlopen(req), query, paginate=query.paginate)
+            query.response += resp
+            query.increment(tree_size)
 
     def make_request(self, query):
         req = self._build_request(query)
-        resp = self._process_response(request.urlopen(req), query)
-        return resp
+        query.response.append(self._process_response(request.urlopen(req), query))
+        return query
 
 
 class Client(object):
@@ -206,28 +228,27 @@ class Client(object):
         return Query(**args)
 
     def query(self, query):
-        out = []
         if query.paginate:
-            for r in self.connection.paginate_request(query):
-                out.append(r)
-            return out
-        resp = self.connection.make_request(query)
-        return resp
+            self.connection.paginate_request(query)
+            return query
+        self.connection.make_request(query)
+        return query
 
-    def get_table_output(self, filter_string, content):
-        k, v = filter_string.split('=')
-        return self._build_query(
-            target='table', content=content, counter=content, **{k: v}
-        )
+    def get_table_output(self, content, filter_string=None, columns=None):
+        kwargs = dict()
+        kwargs.update({'columns': ','.join(PrtgObject.column_table['all'])})  # Default column output
 
-    def get_object_property(self, objectid, prop):
-        return self._build_query(target='getobjectproperty', id=objectid, property=prop, show='text')
+        if filter_string:
+            k, v = filter_string.split('=')
+            kwargs.update({k: v})
 
-    def get_sensor(self, sensorid):
-        return self._build_query(target='getsensordetails', sensorid=sensorid, output='xml', content='sensor')
+        if columns:
+            kwargs.update(**columns)
+
+        return self._build_query(target='table', content=content, counter=content, **kwargs)
 
     def get_status(self):
-        return self._build_query(target='getstatus')
+        return self._build_query(target='getstatus', output='xml')
 
     def get_sensor_types(self):
         return self._build_query(target='sensortypesinuse')
