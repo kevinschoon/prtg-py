@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-
 """
 Python library for Paessler's PRTG (http://www.paessler.com/)
 """
@@ -7,21 +6,34 @@ Python library for Paessler's PRTG (http://www.paessler.com/)
 import json
 import xml.etree.ElementTree as Et
 from urllib import request
+import logging
 
 
 class PrtgException(Exception):
+    """
+    Base PRTG Exception
+    """
     pass
 
 
 class BadRequest(PrtgException):
+    """
+    Bad request
+    """
     pass
 
 
 class BadTarget(PrtgException):
+    """
+    Invalid target
+    """
     pass
 
 
 class UnknownResponse(PrtgException):
+    """
+    Unknown response
+    """
     pass
 
 
@@ -33,7 +45,7 @@ class PrtgObject(object):
     column_table = {
 
         'all': [
-            'objid', 'type', 'tags', 'active', 'name', 'status',
+            'objid', 'type', 'tags', 'active', 'name', 'status', 'parentid',
         ],
         'sensors': [
             'downtime', 'downtimetime', 'downtimesince', 'uptime', 'uptimetime', 'uptimesince', 'knowntime',
@@ -104,11 +116,13 @@ class Status(PrtgObject):
 
 
 class Query(object):
+    """
+    PRTG Query object
+    """
 
-    targets = [
-        'getobjectproperties', 'getobjectstatus', 'getsensordetails', 'getsensordetails', 'table', 'getstatus',
-        'sensortypesinuse', 'getobjectproperty'
-    ]
+    targets = {
+        'table': {'extension': '.xml?'}, 'getstatus': {'extension': '.xml?'}, 'getpasshash': {'extension': '.htm?'}
+    }
 
     args = []
     columns = []
@@ -117,6 +131,7 @@ class Query(object):
     method = 'GET'
 
     def __init__(self, endpoint, target, username, password, output='json', max=500, **kwargs):
+        logging.info('Loading client: {} {}'.format(endpoint, target))
 
         if target not in self.targets:
             raise BadTarget('Invalid API target: {}'.format(target))
@@ -127,7 +142,7 @@ class Query(object):
         self.output = output
         self.method = 'GET'
         self.content = ''
-        self.target = target + '.xml' + '?'
+        self.target = target + self.targets[target]['extension']
         self.paginate = False
         self.response = list()
         self.start = 0
@@ -160,6 +175,8 @@ class Query(object):
         if self.extra:
             _url += '&' + '&'.join(map(lambda x: '{}={}'.format(x[0], x[1]),
                                        filter(lambda z: z[1], self.extra.items())))
+
+        logging.info('Got URL: {}'.format(_url))
         return _url
 
     def __str__(self):
@@ -167,14 +184,15 @@ class Query(object):
 
 
 class Connection(object):
+    """
+    PRTG Connection Object
+    """
 
     @staticmethod
     def _process_response(response, query, paginate=False):
 
         processed = None
         out = None
-
-        print(query.target)
 
         if query.output == 'json':
             out = response.read().decode('utf-8')
@@ -192,16 +210,22 @@ class Connection(object):
             if all([query.content == 'devices', processed]):
                 return [Device(**x) for x in processed['devices']], processed['treesize']
 
+        if query.target == 'getstatus.xml?':
+            st = dict()
+            for status in processed.iter('status'):
+                for attrib in status:
+                    st[attrib.tag] = attrib.text
+            return Status(**st)
+
         if not processed:
             raise UnknownResponse('Unknown response: {}'.format(out))
 
         return processed
 
-    def __init__(self):
-        pass
-
     def _build_request(self, query):
-        return request.Request(url=str(query), method=query.method)
+        req, method = str(query), query.method
+        logging.debug('REQUEST: target={} method={}'.format(req, method))
+        return request.Request(url=req, method=method)
 
     def paginate_request(self, query):
         while not query.finished:
@@ -209,6 +233,7 @@ class Connection(object):
             resp, tree_size = self._process_response(request.urlopen(req), query, paginate=query.paginate)
             query.response += resp
             query.increment(tree_size)
+            logging.info('Processed {} of {} objects'.format(query.start, tree_size))
 
     def make_request(self, query):
         req = self._build_request(query)
@@ -217,6 +242,9 @@ class Connection(object):
 
 
 class Client(object):
+    """
+    Main PRTG client object
+    """
 
     def __init__(self, endpoint, username, password):
         self.connection = Connection()
@@ -225,7 +253,9 @@ class Client(object):
     def _build_query(self, **kwargs):
         args = self.query_args.copy()
         args.update(kwargs)
-        return Query(**args)
+        q = Query(**args)
+        logging.debug('Build query: {}'.format(q))
+        return q
 
     def query(self, query):
         if query.paginate:
@@ -234,25 +264,50 @@ class Client(object):
         self.connection.make_request(query)
         return query
 
-    def get_table_output(self, content, filter_string=None, columns=None):
-        kwargs = dict()
-        kwargs.update({'columns': ','.join(PrtgObject.column_table['all'])})  # Default column output
+    def get_table_output(self, content, objid=None, filter_string=None,
+                         columns=','.join(PrtgObject.column_table['all'])):
+        """
+        Get table output from the PRTG server
+        :param content: str
+        :param objid: str
+        :param filter_string: str
+        :param columns: list
+        :return: Query
+        """
+
+        options = dict()
 
         if filter_string:
             k, v = filter_string.split('=')
-            kwargs.update({k: v})
+            options.update({k: v})
 
-        if columns:
-            kwargs.update(**columns)
+        if objid:
+            options.update({'id': objid})
 
-        return self._build_query(target='table', content=content, counter=content, **kwargs)
+        options.update({'columns': columns})
+
+        return self._build_query(target='table', content=content, counter=content, **options)
 
     def get_status(self):
+        """
+        Get the status of the PRTG server
+        :return: Query
+        """
         return self._build_query(target='getstatus', output='xml')
 
     def get_sensor_types(self):
+        """
+        Get all sensor types that are in use on the PRTG server
+        :return: Query
+        """
         return self._build_query(target='sensortypesinuse')
 
     def set_object_property(self, objectid, name, value):
+        """
+        Set the property of an object
+        :param objectid:
+        :param name:
+        :param value:
+        :return:
+        """
         return self._build_query(target='setobjectproperty', id=objectid, name=name, value=value)
-
