@@ -117,7 +117,8 @@ class Status(PrtgObject):
 
 class Query(object):
     """
-    PRTG Query object
+    PRTG Query object. This objects will return the URL as a string and
+    hold the response from the server.
     """
 
     targets = {
@@ -190,6 +191,9 @@ class Connection(object):
 
     @staticmethod
     def _process_response(response, query, paginate=False):
+        """
+        Process the response from the server.
+        """
 
         processed = None
         out = None
@@ -223,11 +227,17 @@ class Connection(object):
         return processed
 
     def _build_request(self, query):
+        """
+        Build the HTTP request.
+        """
         req, method = str(query), query.method
         logging.debug('REQUEST: target={} method={}'.format(req, method))
         return request.Request(url=req, method=method)
 
     def paginate_request(self, query):
+        """
+        Paginate a large request into several HTTP requests.
+        """
         while not query.finished:
             req = self._build_request(query)
             resp, tree_size = self._process_response(request.urlopen(req), query, paginate=query.paginate)
@@ -236,6 +246,9 @@ class Connection(object):
             logging.info('Processed {} of {} objects'.format(query.start, tree_size))
 
     def make_request(self, query):
+        """
+        Make a single HTTP request
+        """
         req = self._build_request(query)
         query.response.append(self._process_response(request.urlopen(req), query))
         return query
@@ -243,7 +256,7 @@ class Connection(object):
 
 class Client(object):
     """
-    Main PRTG client object
+    Main PRTG client object. The client accepts PRTG Queries, handles the request, and updates the "response" attribute.
     """
 
     def __init__(self, endpoint, username, password):
@@ -251,6 +264,11 @@ class Client(object):
         self.query_args = {'endpoint': endpoint, 'username': username, 'password': password}
 
     def _build_query(self, **kwargs):
+        """
+        Generate a Query object
+        :param kwargs: dict
+        :return: Query
+        """
         args = self.query_args.copy()
         args.update(kwargs)
         q = Query(**args)
@@ -258,13 +276,18 @@ class Client(object):
         return q
 
     def query(self, query):
+        """
+        Make a query against the PRTG API
+        :param query: Query
+        :return: Query
+        """
         if query.paginate:
             self.connection.paginate_request(query)
             return query
         self.connection.make_request(query)
         return query
 
-    def get_table_output(self, content, objid=None, filter_string=None,
+    def table(self, content, objid=None, filter_string=None,
                          columns=','.join(PrtgObject.column_table['all'])):
         """
         Get table output from the PRTG server
@@ -288,19 +311,12 @@ class Client(object):
 
         return self._build_query(target='table', content=content, counter=content, **options)
 
-    def get_status(self):
+    def status(self):
         """
         Get the status of the PRTG server
         :return: Query
         """
         return self._build_query(target='getstatus', output='xml')
-
-    def get_sensor_types(self):
-        """
-        Get all sensor types that are in use on the PRTG server
-        :return: Query
-        """
-        return self._build_query(target='sensortypesinuse')
 
     def set_object_property(self, objectid, name, value):
         """
