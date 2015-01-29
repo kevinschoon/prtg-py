@@ -71,7 +71,16 @@ class PrtgObject(object):
     def __init__(self, **kwargs):
         for key in self.column_table['all']:
             try:
-                self.__setattr__(key, kwargs[key])
+                value = kwargs[key]
+                if key == 'tags':  # Process tags as a list
+                    value = value.split(' ')
+                if key == 'objid':
+                    value = int(value)
+                if key == 'parentid':
+                    value = int(value)
+                if all([key == 'status', value is not 'Up']):
+                    self.__setattr__('faulted', True)
+                self.__setattr__(key, value)
             except KeyError:
                 pass
 
@@ -287,8 +296,7 @@ class Client(object):
         self.connection.make_request(query)
         return query
 
-    def table(self, content, objid=None, filter_string=None,
-                         columns=','.join(PrtgObject.column_table['all'])):
+    def table(self, content, objid=None, filter_string=None, bulk_filter=None, columns=None):
         """
         Get table output from the PRTG server
         :param content: str
@@ -300,14 +308,17 @@ class Client(object):
 
         options = dict()
 
+        options.update({'columns': ','.join(columns)})
+
+        if bulk_filter:
+            options.update(bulk_filter)
+
         if filter_string:
             k, v = filter_string.split('=')
             options.update({k: v})
 
         if objid:
             options.update({'id': objid})
-
-        options.update({'columns': columns})
 
         return self._build_query(target='table', content=content, counter=content, **options)
 
