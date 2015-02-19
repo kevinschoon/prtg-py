@@ -1,9 +1,8 @@
 from setuptools import setup
-from prtg import __version__
 
 setup(
-    name='prtg',
-    version=__version__,
+    name='prtg-py',
+    version='0.0.1',
     description='A Python client for PRTG',
     url='http://github.com/kevinschoon/prtg-py',
     author='Kevin Schoon',

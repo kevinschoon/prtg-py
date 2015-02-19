@@ -87,17 +87,14 @@ class PrtgObject(object):
             except KeyError:
                 pass
 
-    def to_json(self):
-        return json.dumps(self.__dict__)
-
-    def __str__(self):
-        return self.to_json()
-
 
 class Sensor(PrtgObject):
     """
     PRTG sensor object
     """
+
+    content_type = 'sensors'
+
     def __init__(self, **kwargs):
         PrtgObject.__init__(self, **kwargs)
         for key in self.column_table['sensors']:
@@ -111,6 +108,9 @@ class Device(PrtgObject):
     """
     PRTG device object
     """
+
+    content_type = 'devices'
+
     def __init__(self, **kwargs):
         PrtgObject.__init__(self, **kwargs)
         for key in self.column_table['devices']:
@@ -119,14 +119,14 @@ class Device(PrtgObject):
             except KeyError:
                 pass
 
-    def sensors_query(self):
-        pass
-
 
 class Status(PrtgObject):
     """
     PRTG Status Object
     """
+
+    content_type = 'status'
+
     def __init__(self, **kwargs):
         PrtgObject.__init__(self, **kwargs)
         for key in self.column_table['status']:
@@ -152,6 +152,7 @@ class RegexMatch(Condition):
         match = re.match(self.expression, self.object.__getattribute__(self.attribute))
         if match:
             return True
+
         return False
 
 
@@ -310,13 +311,12 @@ class Client(object):
 
     cache_path = '/tmp/prtg_json_cache.json'
 
-    def __init__(self, endpoint, username, password, use_cache=False):
+    def __init__(self, endpoint, username, password):
         self.connection = Connection()
         self.endpoint = endpoint
         self.username = username
         self.password = password
 
-        self.use_cache = use_cache
         self.cache = Cache()
 
     def query(self, query):
@@ -329,7 +329,6 @@ class Client(object):
         cache = self.cache.get_content(query)
 
         if cache:
-            logging.warning('Loading cached response')
             query.response = cache
 
         else:
@@ -338,8 +337,7 @@ class Client(object):
                 self.connection.get_paginated_request(query)
             else:
                 self.connection.get_request(query)
-
-            self.cache.write_content(query.response, query.content)
+            self.cache.write_content(query.response)
 
         return query
 
@@ -347,35 +345,47 @@ class Client(object):
         logging.info('Refreshing content: {}'.format(content))
         devices = Query(target='table', endpoint=self.endpoint, username=self.username, password=self.password, content=content, counter=content)
         self.connection.get_paginated_request(devices)
-        self.cache.write_content(devices, content)
+        self.cache.write_content(devices.response)
 
-    def update(self, content, attribute, value, method='update'):
-        for obj in content:
-            logging.info('Updating object: {} with {}={}'.format(obj, attribute, value))
+    def update(self, content, attribute, value, replace=False):
+        for index, obj in enumerate(content):
+            logging.debug('Updating object: {} with {}={}'.format(obj, attribute, value))
             if attribute == 'tags':
-                if method == 'update':
-                    obj.tags += value.split(',')
-                elif method == 'replace':
+                tags = value.split(',')
+                if replace:
                     obj.tags = value.split(',')
-        self.cache.write_content(content, 'devices')
+                else:
+                    obj.tags += [x for x in tags if not x in obj.tags]
+            content[index] = obj
+        self.cache.write_content(content, force=True)
 
-    def content(self, content, parents=False, regex=None, attribute=None):
+    def content(self, content_name, parents=False, regex=None, attribute=None):
 
         response = list()
 
-        for resp in self.cache.get_content(content):
+        for resp in self.cache.get_content(content_name):
 
-            if all([not regex, not attribute]):
+            if not all([regex, attribute]):
                 response.append(resp)
-
-            elif all([regex, attribute]):
+            else:
                 if RegexMatch(resp, expression=regex, attribute=attribute):
                     response.append(resp)
 
-        if all([content == 'sensors', parents is True]):
+        if all([content_name == 'sensors', parents is True]):
+            logging.info('Searching for parents.. this may take a while')
             p = list()
-            for child in response:
-                p += [x for x in self.cache.get_content('devices') if child.parentid == x.objid]
+            # TODO: Fix duplicate returns
+            for index, child in enumerate(response):
+                logging.debug('Searching sensor {} with parentid: {} ({} of {} sensors)'.format(
+                    child.objid, child.parentid, index, len(response))
+                )
+                parent = self.cache.get_object(str(child.parentid))
+                if parent:
+                    logging.debug('Found sensor parent: {}'.format(parent))
+                    p.append(self.cache.get_object(str(child.parentid)))
+                else:
+                    logging.warning('Unable to find sensor parent')
+                #p += [x for x in self.cache.get_content('devices') if child.parentid == x.objid]
 
             response = p
 
