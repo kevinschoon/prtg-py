@@ -4,9 +4,12 @@ Python library for Paessler's PRTG (http://www.paessler.com/)
 """
 
 import json
-import xml.etree.ElementTree as Et
-from urllib import request
 import logging
+import xml.etree.ElementTree as Et
+import re
+
+from urllib import request
+from prtg.cache import Cache
 
 
 class PrtgException(Exception):
@@ -69,20 +72,26 @@ class PrtgObject(object):
     }
 
     def __init__(self, **kwargs):
+        self.type = str(self.__class__.__name__)
         for key in self.column_table['all']:
             try:
                 value = kwargs[key]
                 if key == 'tags':  # Process tags as a list
-                    value = value.split(' ')
+                    if isinstance(value, str):
+                        value = value.split(' ')
                 if key == 'objid':
                     value = int(value)
                 if key == 'parentid':
                     value = int(value)
-                if all([key == 'status', value is not 'Up']):
-                    self.__setattr__('faulted', True)
                 self.__setattr__(key, value)
             except KeyError:
                 pass
+
+    def to_json(self):
+        return json.dumps(self.__dict__)
+
+    def __str__(self):
+        return self.to_json()
 
 
 class Sensor(PrtgObject):
@@ -110,6 +119,9 @@ class Device(PrtgObject):
             except KeyError:
                 pass
 
+    def sensors_query(self):
+        pass
+
 
 class Status(PrtgObject):
     """
@@ -124,6 +136,30 @@ class Status(PrtgObject):
                 pass
 
 
+class Condition(object):
+    def __init__(self, prtg_object, expression=None, attribute=None, tag=None):
+        self.object = prtg_object
+        self.expression = expression
+        self.attribute = attribute
+        self.tag = tag
+
+    def __bool__(self):
+        return isinstance(self.object, PrtgObject)
+
+
+class RegexMatch(Condition):
+    def __bool__(self):
+        match = re.match(self.expression, self.object.__getattribute__(self.attribute))
+        if match:
+            return True
+        return False
+
+
+class HasTag(Condition):
+    def __bool__(self):
+        return self.tag in self.object.tags
+
+
 class Query(object):
     """
     PRTG Query object. This objects will return the URL as a string and
@@ -135,10 +171,11 @@ class Query(object):
     }
 
     args = []
-    columns = []
     target = ''
+
     url_str = '{}/api/{}username={}&password={}&output={}'
     method = 'GET'
+    default_columns = ['objid', 'parentid', 'name', 'tags', 'active']
 
     def __init__(self, endpoint, target, username, password, output='json', max=500, **kwargs):
         logging.info('Loading client: {} {}'.format(endpoint, target))
@@ -159,6 +196,9 @@ class Query(object):
         self.count = max
         self.max = max
         self.finished = False
+
+        if target == 'table':
+            kwargs.update({'columns': ','.join(self.default_columns)})
 
         if 'counter' in kwargs:
             self.paginate = True
@@ -243,7 +283,7 @@ class Connection(object):
         logging.debug('REQUEST: target={} method={}'.format(req, method))
         return request.Request(url=req, method=method)
 
-    def paginate_request(self, query):
+    def get_paginated_request(self, query):
         """
         Paginate a large request into several HTTP requests.
         """
@@ -254,7 +294,7 @@ class Connection(object):
             query.increment(tree_size)
             logging.info('Processed {} of {} objects'.format(query.start, tree_size))
 
-    def make_request(self, query):
+    def get_request(self, query):
         """
         Make a single HTTP request
         """
@@ -268,21 +308,16 @@ class Client(object):
     Main PRTG client object. The client accepts PRTG Queries, handles the request, and updates the "response" attribute.
     """
 
-    def __init__(self, endpoint, username, password):
-        self.connection = Connection()
-        self.query_args = {'endpoint': endpoint, 'username': username, 'password': password}
+    cache_path = '/tmp/prtg_json_cache.json'
 
-    def _build_query(self, **kwargs):
-        """
-        Generate a Query object
-        :param kwargs: dict
-        :return: Query
-        """
-        args = self.query_args.copy()
-        args.update(kwargs)
-        q = Query(**args)
-        logging.debug('Build query: {}'.format(q))
-        return q
+    def __init__(self, endpoint, username, password, use_cache=False):
+        self.connection = Connection()
+        self.endpoint = endpoint
+        self.username = username
+        self.password = password
+
+        self.use_cache = use_cache
+        self.cache = Cache()
 
     def query(self, query):
         """
@@ -290,51 +325,66 @@ class Client(object):
         :param query: Query
         :return: Query
         """
-        if query.paginate:
-            self.connection.paginate_request(query)
-            return query
-        self.connection.make_request(query)
+
+        cache = self.cache.get_content(query)
+
+        if cache:
+            logging.warning('Loading cached response')
+            query.response = cache
+
+        else:
+
+            if query.paginate:
+                self.connection.get_paginated_request(query)
+            else:
+                self.connection.get_request(query)
+
+            self.cache.write_content(query.response, query.content)
+
         return query
 
-    def table(self, content, objid=None, filter_string=None, bulk_filter=None, columns=None):
-        """
-        Get table output from the PRTG server
-        :param content: str
-        :param objid: str
-        :param filter_string: str
-        :param columns: list
-        :return: Query
-        """
+    def refresh(self, content='devices'):
+        logging.info('Refreshing content: {}'.format(content))
+        devices = Query(target='table', endpoint=self.endpoint, username=self.username, password=self.password, content=content, counter=content)
+        self.connection.get_paginated_request(devices)
+        self.cache.write_content(devices, content)
 
-        options = dict()
+    def update(self, content, attribute, value, method='update'):
+        for obj in content:
+            logging.info('Updating object: {} with {}={}'.format(obj, attribute, value))
+            if attribute == 'tags':
+                if method == 'update':
+                    obj.tags += value.split(',')
+                elif method == 'replace':
+                    obj.tags = value.split(',')
+        self.cache.write_content(content, 'devices')
 
-        options.update({'columns': ','.join(columns)})
+    def content(self, content, parents=False, regex=None, attribute=None):
 
-        if bulk_filter:
-            options.update(bulk_filter)
+        response = list()
 
-        if filter_string:
-            k, v = filter_string.split('=')
-            options.update({k: v})
+        for resp in self.cache.get_content(content):
 
-        if objid:
-            options.update({'id': objid})
+            if all([not regex, not attribute]):
+                response.append(resp)
 
-        return self._build_query(target='table', content=content, counter=content, **options)
+            elif all([regex, attribute]):
+                if RegexMatch(resp, expression=regex, attribute=attribute):
+                    response.append(resp)
+
+        if all([content == 'sensors', parents is True]):
+            p = list()
+            for child in response:
+                p += [x for x in self.cache.get_content('devices') if child.parentid == x.objid]
+
+            response = p
+
+        return response
 
     def status(self):
-        """
-        Get the status of the PRTG server
-        :return: Query
-        """
-        return self._build_query(target='getstatus', output='xml')
-
-    def set_object_property(self, objectid, name, value):
-        """
-        Set the property of an object
-        :param objectid:
-        :param name:
-        :param value:
-        :return:
-        """
-        return self._build_query(target='setobjectproperty', id=objectid, name=name, value=value)
+        status = Query(
+            endpoint=self.endpoint, username=self.username, password=self.password,
+            target='getstatus', output='xml'
+        )
+        self.connection.get_request(status)
+        return status.response
