@@ -176,7 +176,7 @@ class Query(object):
 
     url_str = '{}/api/{}username={}&password={}&output={}'
     method = 'GET'
-    default_columns = ['objid', 'parentid', 'name', 'tags', 'active']
+    default_columns = ['objid', 'parentid', 'name', 'tags', 'active', 'status']
 
     def __init__(self, endpoint, target, username, password, output='json', max=500, **kwargs):
         logging.info('Loading client: {} {}'.format(endpoint, target))
@@ -309,8 +309,6 @@ class Client(object):
     Main PRTG client object. The client accepts PRTG Queries, handles the request, and updates the "response" attribute.
     """
 
-    cache_path = '/tmp/prtg_json_cache.json'
-
     def __init__(self, endpoint, username, password):
         self.connection = Connection()
         self.endpoint = endpoint
@@ -374,19 +372,16 @@ class Client(object):
         if all([content_name == 'sensors', parents is True]):
             logging.info('Searching for parents.. this may take a while')
             p = list()
-            # TODO: Fix duplicate returns
+            ids = set()
             for index, child in enumerate(response):
-                logging.debug('Searching sensor {} with parentid: {} ({} of {} sensors)'.format(
-                    child.objid, child.parentid, index, len(response))
-                )
-                parent = self.cache.get_object(str(child.parentid))
+                parent = self.cache.get_object(str(child.parentid))  # Parent device.
                 if parent:
-                    logging.debug('Found sensor parent: {}'.format(parent))
-                    p.append(self.cache.get_object(str(child.parentid)))
+                    ids.add(str(parent.objid))  # Lookup unique parent ids.
                 else:
                     logging.warning('Unable to find sensor parent')
-                #p += [x for x in self.cache.get_content('devices') if child.parentid == x.objid]
 
+            for parent in ids:
+                p.append(self.cache.get_object(parent))
             response = p
 
         return response
