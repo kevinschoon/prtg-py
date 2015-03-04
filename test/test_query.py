@@ -4,34 +4,103 @@ Unittests for PRTG Query Builder
 """
 
 import unittest
-import re
-from prtg import Client
+from prtg.models import Query
+from prtg.client import Client, Connection, Sensor, Device, Status, PrtgObject
+
+username = 'prtgadmin'
+password = 'prtgadmin'
+endpoint = 'http://192.168.59.103'
 
 
-class TestQueryBuilder(unittest.TestCase):
+class TestQuery(unittest.TestCase):
 
-    def setUp(self):
-        self.endpoint = 'https://prtg.randomcompany.com'
-        self.username = 'UserName'
-        self.password = 'SecretPw'
-        self.client = PrtgClient(self.endpoint, self.username, self.password)
+    def test_simple_query(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='table')
+        self.assertIsInstance(query, Query)
+        self.assertIn(endpoint, str(query))
+        self.assertIn(username, str(query))
+        self.assertIn(password, str(query))
 
-    def test_get_object(self):
-        target = 'getobjectproperty.xml'
-        query = self.client.get_object(objectid=1234)
-        r = re.compile(r'((https://prtg\.randomcompany.com)/api/(.*)\?username=(.*)&password=(.*)&objectid=(.*))')
-        m = r.match(str(query))
-        assert m.group(2) == self.endpoint
-        assert m.group(3) == target
-        assert m.group(4) == self.username
-        assert m.group(5) == self.password
-        assert m.group(6) == '1234'
+    def test_status_query(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='getstatus')
+        self.assertIsInstance(query, Query)
+
+    def test_set_object_property_query(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='setobjectproperty', objid='2001', name='tags', value='"some new tags"')
+        self.assertIsInstance(query, Query)
+
+    def test_get_object_property_query(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='getobjectproperty', objid='2001', name='tags')
+        self.assertIsInstance(query, Query)
 
 
-class TestQueryCounter(unittest.TestCase):
+class TestClient(unittest.TestCase):
 
-    def setUp(self):
-        pass
+    def test_get_object_property(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='getobjectproperty', objid='2001', name='tags')
+        r = client.query(query)
+        for obj in r:
+            self.assertIsInstance(obj, PrtgObject)
 
-    def test_get_objects(self):
-        pass
+    def test_set_object_property(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='setobjectproperty', objid='2001', name='tags', value='some new tags')
+        client.query(query)
+
+    def test_devices(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='table', content='devices')
+        r = client.query(query)
+        for device in r:
+            self.assertIsInstance(device, Device)
+
+    def test_sensors(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='table', content='sensors')
+        r = client.query(query)
+        for sensor in r:
+            self.assertIsInstance(sensor, Sensor)
+
+    def test_status(self):
+        client = Client(endpoint=endpoint, username=username, password=password)
+        query = Query(client=client, target='getstatus')
+        r = client.query(query)
+        for status in r:
+            self.assertIsInstance(status, Status)
+
+
+class TestConnection(unittest.TestCase):
+
+    def test_simple_connection(self):
+        c = Connection()
+        self.assertIsInstance(c, Connection)
+
+
+class TestSensor(unittest.TestCase):
+
+    def test_sensor(self):
+        s = Sensor()
+        self.assertIsInstance(s, Sensor)
+
+
+class TestDevice(unittest.TestCase):
+
+    def test_device(self):
+        d = Device()
+        self.assertIsInstance(d, Device)
+
+
+class TestStatus(unittest.TestCase):
+
+    def test_status(self):
+        s = Status()
+        self.assertIsInstance(s, Status)
+
+
+if __name__ == '__main__':
+    unittest.main()
